@@ -1,0 +1,47 @@
+{
+  "name": "pfe",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo run:android",
+    "ios": "expo run:ios",
+    "web": "expo start --web"
+  },
+  "dependencies": {
+    "@expo/vector-icons": "^14.0.4",
+    "@react-native-async-storage/async-storage": "^1.23.1",
+    "@react-native-community/datetimepicker": "^8.3.0",
+    "@react-native-picker/picker": "^2.11.0",
+    "@react-navigation/native": "^7.0.14",
+    "@react-navigation/stack": "^7.1.1",
+    "@supabase/supabase-js": "^2.49.3",
+    "axios": "^1.7.9",
+    "expo": "~52.0.32",
+    "expo-document-picker": "~13.0.3",
+    "expo-file-system": "~18.0.11",
+    "expo-linear-gradient": "~14.0.2",
+    "expo-print": "~14.0.3",
+    "expo-status-bar": "~2.0.1",
+    "google-auth-library": "^9.15.1",
+    "lucide-react": "^0.477.0",
+    "pdf-parse": "^1.1.1",
+    "pdfjs-dist": "^4.10.38",
+    "react": "18.3.1",
+    "react-native": "0.76.7",
+    "react-native-chart-kit": "^6.12.0",
+    "react-native-document-picker": "^9.3.1",
+    "react-native-linear-gradient": "^2.8.3",
+    "react-native-pdf": "^6.7.7",
+    "react-native-picker-select": "^9.3.1",
+    "react-native-url-polyfill": "^2.0.0",
+    "tesseract.js": "^6.0.0",
+    "uuid": "^11.1.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.20.0",
+    "@react-native-community/cli": "latest"
+  },
+  "private": true
+}
