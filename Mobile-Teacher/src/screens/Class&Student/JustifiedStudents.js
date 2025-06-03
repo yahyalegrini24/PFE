@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity, Animated } from 'react-native';
+import { View, Text, StyleSheet, FlatList, ActivityIndicator, TouchableOpacity } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { supabase } from '../../configuration/supabase';
 import { Ionicons } from '@expo/vector-icons';
@@ -9,8 +9,8 @@ const AbsentStudents = ({ route }) => {
   const { sessionId, moduleName, groupName } = route.params;
   const [absentees, setAbsentees] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [expanded, setExpanded] = useState(null); // Track which card is expanded
-  const [justifying, setJustifying] = useState(null); // Track which student is being justified
+  const [expanded, setExpanded] = useState(null);
+  const [justifying, setJustifying] = useState(null);
 
   useEffect(() => {
     fetchAbsentees();
@@ -22,20 +22,19 @@ const AbsentStudents = ({ route }) => {
       const { data, error } = await supabase
         .from('Attendance')
         .select(`
-          studentMatricule,
-          StudentGroup (
-            matricule,
-            Student (
-              firstName,
-              lastName
-            )
+          matricule,
+          Student (
+            firstName,
+            lastName
           )
         `)
         .eq('sessionId', sessionId)
         .eq('presence', 0);
+      
       if (error) throw error;
       setAbsentees(data || []);
     } catch (error) {
+      console.error('Error fetching absentees:', error);
       setAbsentees([]);
     } finally {
       setLoading(false);
@@ -46,26 +45,32 @@ const AbsentStudents = ({ route }) => {
     setExpanded(expanded === matricule ? null : matricule);
   };
 
-  const handleJustify = async (studentMatricule) => {
-    setJustifying(studentMatricule);
-    const { error } = await supabase
-      .from('Attendance')
-      .update({ presence: 0.5 })
-      .eq('sessionId', sessionId)
-      .eq('studentMatricule', studentMatricule);
-    if (!error) {
-      setAbsentees(absentees.filter(a => a.studentMatricule !== studentMatricule));
-      setExpanded(null);
+  const handleJustify = async (matricule) => {
+    setJustifying(matricule);
+    try {
+      const { error } = await supabase
+        .from('Attendance')
+        .update({ presence: 0.5 })
+        .eq('sessionId', sessionId)
+        .eq('matricule', matricule);
+      
+      if (!error) {
+        setAbsentees(absentees.filter(a => a.matricule !== matricule));
+        setExpanded(null);
+      }
+    } catch (error) {
+      console.error('Error justifying absence:', error);
+    } finally {
+      setJustifying(null);
     }
-    setJustifying(null);
   };
 
   const renderItem = ({ item }) => {
-    const isExpanded = expanded === item.studentMatricule;
+    const isExpanded = expanded === item.matricule;
     return (
       <TouchableOpacity
         activeOpacity={0.85}
-        onPress={() => handleExpand(item.studentMatricule)}
+        onPress={() => handleExpand(item.matricule)}
         style={[
           styles.absentCard,
           isExpanded && styles.absentCardExpanded
@@ -74,20 +79,20 @@ const AbsentStudents = ({ route }) => {
         <Ionicons name="person-remove" size={22} color="#dc3545" />
         <View style={{ flex: 1 }}>
           <Text style={styles.absentName}>
-            {item.StudentGroup?.Student?.firstName} {item.StudentGroup?.Student?.lastName}
+            {item.Student?.firstName} {item.Student?.lastName}
           </Text>
           <Text style={styles.matriculeText}>
-            Matricule: {item.studentMatricule}
+            Matricule: {item.matricule}
           </Text>
           {isExpanded && (
             <TouchableOpacity
               style={styles.justifyBtn}
-              onPress={() => handleJustify(item.studentMatricule)}
-              disabled={justifying === item.studentMatricule}
+              onPress={() => handleJustify(item.matricule)}
+              disabled={justifying === item.matricule}
             >
               <Ionicons name="checkmark-done-circle" size={18} color="#fff" />
               <Text style={styles.justifyBtnText}>
-                {justifying === item.studentMatricule ? 'Justifying...' : 'Justify'}
+                {justifying === item.matricule ? 'Justifying...' : 'Justify'}
               </Text>
             </TouchableOpacity>
           )}
@@ -105,7 +110,7 @@ const AbsentStudents = ({ route }) => {
       ) : (
         <FlatList
           data={absentees}
-          keyExtractor={item => item.studentMatricule}
+          keyExtractor={(item) => item.matricule}
           renderItem={renderItem}
           contentContainerStyle={styles.listContainer}
           ListEmptyComponent={

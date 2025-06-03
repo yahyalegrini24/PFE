@@ -8,13 +8,12 @@ import {
   SafeAreaView,
   ActivityIndicator,
   RefreshControl,
-  Alert,
-  Animated,
-  LayoutAnimation,
   Modal,
-  TouchableWithoutFeedback
+  TouchableWithoutFeedback,
+  Animated,
+  LayoutAnimation
 } from "react-native";
-import { MaterialCommunityIcons, MaterialIcons, Ionicons, Feather } from "@expo/vector-icons";
+import { MaterialCommunityIcons, MaterialIcons, Feather } from "@expo/vector-icons";
 import { supabase } from "../../configuration/supabase";
 import Footer from "../../components/Footer";
 import { UserContext } from "../../context/UserContext";
@@ -33,13 +32,95 @@ const GroupManagement = ({ navigation }) => {
   const [semesters, setSemesters] = useState([]);
   const [selectedSemester, setSelectedSemester] = useState(null);
   const [showSemesterFilter, setShowSemesterFilter] = useState(false);
+  const [academicYears, setAcademicYears] = useState([]);
+  const [currentAcademicYear, setCurrentAcademicYear] = useState(null);
 
-  // Fetch all available semesters
+  // Helper function to extract academic year from path
+  const extractAcademicYearFromPath = useCallback((filePath) => {
+    if (!filePath) return null;
+    const academicYearMatch = filePath.match(/\\(\d{4})\\|\/(\d{4})\//);
+    return academicYearMatch ? academicYearMatch[1] || academicYearMatch[2] : null;
+  }, []);
+
+  // Check if group belongs to current academic year
+  const isGroupInCurrentAcademicYear = useCallback((groupPath, currentAcademicYear) => {
+    if (!currentAcademicYear || !groupPath) return false;
+    const pathAcademicYear = extractAcademicYearFromPath(groupPath);
+    if (!pathAcademicYear) return false;
+    
+    const academicYearLabel = currentAcademicYear.label;
+    let expectedPathYear = null;
+    
+    if (academicYearLabel.includes('-')) {
+      const years = academicYearLabel.split('-');
+      if (years.length === 2) {
+        expectedPathYear = years[0].slice(-2) + years[1].slice(-2);
+      }
+    } else if (academicYearLabel.length === 4) {
+      expectedPathYear = academicYearLabel;
+    }
+    
+    return pathAcademicYear === expectedPathYear;
+  }, [extractAcademicYearFromPath]);
+
+  // Fetch Academic Years
+  const fetchAcademicYears = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('AcademicYear')
+        .select('*')
+        .order('AcademicId', { ascending: true });
+
+      if (error) throw error;
+      setAcademicYears(data || []);
+    } catch (error) {
+      console.error("Error fetching academic years:", error);
+      setStatusMessage({ type: "error", text: "Failed to load academic years" });
+      setTimeout(() => setStatusMessage(null), 3000);
+    }
+  };
+
+  // Determine current academic year
+  const determineCurrentAcademicYear = useCallback(() => {
+    const currentDate = new Date();
+    
+    const currentSemester = semesters.find(semester => {
+      if (!semester.StartDate || !semester.EndDate) return false;
+      const startDate = new Date(semester.StartDate);
+      const endDate = new Date(semester.EndDate);
+      return currentDate >= startDate && currentDate <= endDate;
+    });
+
+    if (currentSemester && currentSemester.AcademicId) {
+      const academicYear = academicYears.find(year => year.AcademicId === currentSemester.AcademicId);
+      setCurrentAcademicYear(academicYear);
+      return academicYear;
+    } else {
+      setCurrentAcademicYear(null);
+      setStatusMessage({ type: "warning", text: "Academic year still doesn't start" });
+      setTimeout(() => setStatusMessage(null), 3000);
+      return null;
+    }
+  }, [semesters, academicYears]);
+
+  useEffect(() => {
+    if (semesters.length > 0 && academicYears.length > 0) {
+      determineCurrentAcademicYear();
+    }
+  }, [semesters, academicYears, determineCurrentAcademicYear]);
+
+  // Fetch all available semesters with Academic Year info
   const fetchSemesters = useCallback(async () => {
     try {
       const { data, error } = await supabase
         .from('Semestre')
-        .select('*')
+        .select(`
+          *,
+          AcademicYear:AcademicId (
+            AcademicId,
+            label
+          )
+        `)
         .order('StartDate', { ascending: false });
 
       if (error) throw error;
@@ -135,14 +216,21 @@ const GroupManagement = ({ navigation }) => {
         .eq('Section.SchoolYear.branchId', user.branchId);
 
       if (error) throw error;
-      return data;
+      
+      // Filter groups based on current academic year in path
+      const filteredData = data.filter(group => {
+        if (!currentAcademicYear) return true;
+        return isGroupInCurrentAcademicYear(group.group_path, currentAcademicYear);
+      });
+      
+      return filteredData;
     } catch (error) {
       console.error("Error fetching all groups:", error);
       setStatusMessage({ type: "error", text: "Failed to load available groups" });
       setTimeout(() => setStatusMessage(null), 3000);
       return [];
     }
-  }, [user]);
+  }, [user, currentAcademicYear, isGroupInCurrentAcademicYear]);
 
   const buildDataStructure = useCallback((groups, assignedGroups) => {
     const degrees = {};
@@ -154,6 +242,11 @@ const GroupManagement = ({ navigation }) => {
       const filePath = group.group_path;
       
       if (!degree || !schoolYear || !section) return;
+
+      // Skip if not in current academic year
+      if (currentAcademicYear && !isGroupInCurrentAcademicYear(filePath, currentAcademicYear)) {
+        return;
+      }
 
       if (!degrees[degree.degreeId]) {
         degrees[degree.degreeId] = {
@@ -211,7 +304,7 @@ const GroupManagement = ({ navigation }) => {
     });
 
     return degrees;
-  }, [expandedItems]);
+  }, [expandedItems, currentAcademicYear, isGroupInCurrentAcademicYear]);
 
   const buildRenderData = useCallback((degrees) => {
     const renderData = [];
@@ -250,13 +343,20 @@ const GroupManagement = ({ navigation }) => {
     try {
       setLoading(true);
       
-      const [teacherGroups, allGroups, semesterData] = await Promise.all([
-        fetchTeacherGroups(selectedSemester),
-        fetchAllGroups(),
-        fetchSemesters()
+      // First load academic years and semesters
+      const [semesterData] = await Promise.all([
+        fetchSemesters(),
+        academicYears.length === 0 ? fetchAcademicYears() : Promise.resolve()
       ]);
 
       setSemesters(semesterData);
+
+      // Then load groups after we have academic year info
+      const [teacherGroups, allGroups] = await Promise.all([
+        fetchTeacherGroups(selectedSemester),
+        fetchAllGroups()
+      ]);
+
       setAssignedGroups(teacherGroups);
       setChosenGroups(teacherGroups);
 
@@ -273,11 +373,11 @@ const GroupManagement = ({ navigation }) => {
       setLoading(false);
       setRefreshing(false);
     }
-  }, [user, fetchTeacherGroups, fetchAllGroups, buildDataStructure, buildRenderData, fetchSemesters, selectedSemester]);
+  }, [user, fetchTeacherGroups, fetchAllGroups, buildDataStructure, buildRenderData, fetchSemesters, selectedSemester, academicYears, currentAcademicYear]);
 
   useEffect(() => {
     loadData();
-  }, [loadData, selectedSemester]);
+  }, [loadData, selectedSemester, currentAcademicYear]);
 
   const onRefresh = useCallback(() => {
     setRefreshing(true);
@@ -500,14 +600,6 @@ const GroupManagement = ({ navigation }) => {
               ? styles.successMessage 
               : styles.errorMessage
           ]}
-          entering={Animated.spring(new Animated.Value(0), {
-            toValue: 1,
-            useNativeDriver: true
-          })}
-          exiting={Animated.spring(new Animated.Value(1), {
-            toValue: 0,
-            useNativeDriver: true
-          })}
         >
           <View style={styles.statusContent}>
             {statusMessage.type === "success" ? (
@@ -536,6 +628,16 @@ const GroupManagement = ({ navigation }) => {
           <Text style={styles.subHeader}>Manage your assigned student groups</Text>
         </View>
 
+        {/* Current Academic Year Display */}
+        {currentAcademicYear && (
+          <View style={styles.academicYearContainer}>
+            <Feather name="calendar" size={20} color="#1e40af" />
+            <Text style={styles.academicYearText}>
+              Current Academic Year: {currentAcademicYear.label}
+            </Text>
+          </View>
+        )}
+
         {/* Semester Filter */}
         <View style={styles.filterRow}>
           <TouchableOpacity 
@@ -546,9 +648,13 @@ const GroupManagement = ({ navigation }) => {
             <Text style={styles.semesterFilterText}>
               {selectedSemester 
                 ? semesters.find(s => s.SemesterId === selectedSemester)?.label || "Select Semester"
-                : "Select Semester"}
+                : "All Semesters"}
             </Text>
-            <Feather name="chevron-down" size={18} color="#006633" />
+            <Feather 
+              name={showSemesterFilter ? "chevron-up" : "chevron-down"} 
+              size={18} 
+              color="#006633" 
+            />
           </TouchableOpacity>
 
           <TouchableOpacity 
@@ -583,7 +689,11 @@ const GroupManagement = ({ navigation }) => {
                   </View>
                 ))
               ) : (
-                <Text style={styles.noDataText}>No groups available</Text>
+                <Text style={styles.noDataText}>
+                  {currentAcademicYear 
+                    ? `No groups available for academic year ${currentAcademicYear.label}` 
+                    : "No groups available"}
+                </Text>
               )}
             </View>
 
@@ -641,7 +751,7 @@ const GroupManagement = ({ navigation }) => {
                 <TouchableOpacity 
                   style={[
                     styles.saveButton,
-                    !selectedSemester && styles.saveButtonDisabled
+                    (!selectedSemester || saving) && styles.saveButtonDisabled
                   ]}
                   onPress={saveSelectedGroups}
                   disabled={saving || !selectedSemester}
@@ -690,23 +800,27 @@ const GroupManagement = ({ navigation }) => {
               </Text>
             </TouchableOpacity>
             
-            {semesters.map(semester => (
-              <TouchableOpacity
-                key={semester.SemesterId}
-                style={[
-                  styles.modalOption,
-                  selectedSemester === semester.SemesterId && styles.modalOptionSelected
-                ]}
-                onPress={() => {
-                  setSelectedSemester(semester.SemesterId);
-                  setShowSemesterFilter(false);
-                }}
-              >
-                <Text style={selectedSemester === semester.SemesterId ? styles.modalOptionTextSelected : styles.modalOptionText}>
-                  {semester.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {semesters
+              .filter(semester => 
+                !currentAcademicYear || semester.AcademicId === currentAcademicYear.AcademicId
+              )
+              .map(semester => (
+                <TouchableOpacity
+                  key={semester.SemesterId}
+                  style={[
+                    styles.modalOption,
+                    selectedSemester === semester.SemesterId && styles.modalOptionSelected
+                  ]}
+                  onPress={() => {
+                    setSelectedSemester(semester.SemesterId);
+                    setShowSemesterFilter(false);
+                  }}
+                >
+                  <Text style={selectedSemester === semester.SemesterId ? styles.modalOptionTextSelected : styles.modalOptionText}>
+                    {semester.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
           </ScrollView>
         </View>
       </Modal>
@@ -725,24 +839,39 @@ const styles = StyleSheet.create({
     paddingBottom: 80,
     paddingHorizontal: 16
   },
- headerContainer: {
+  headerContainer: {
     marginBottom: 16,
     paddingHorizontal: 8,
-    alignItems: 'center',        // Center horizontally
-    justifyContent: 'center',    // Center vertically (for flex)
-    marginTop: 32,               // Push header a bit down
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 32,
   },
   header: {
     fontSize: 24,
     fontWeight: "bold",
     color: "#006633",
     marginBottom: 4,
-    textAlign: 'center',         // Center text
+    textAlign: 'center',
   },
   subHeader: {
     fontSize: 14,
     color: "#64748b",
-    textAlign: 'center',         // Center text
+    textAlign: 'center',
+  },
+  academicYearContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#dbeafe',
+    borderColor: '#93c5fd',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  academicYearText: {
+    marginLeft: 8,
+    color: '#1e40af',
+    fontWeight: '500',
   },
   filterRow: {
     flexDirection: 'row',

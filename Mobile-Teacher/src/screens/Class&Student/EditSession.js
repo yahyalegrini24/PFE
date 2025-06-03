@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useContext } from 'react';
+import React, { useEffect, useState, useContext, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -33,6 +33,46 @@ const EditSession = () => {
   const [expandedSemesters, setExpandedSemesters] = useState({});
   const [expandedModules, setExpandedModules] = useState({});
   const [statusMessage, setStatusMessage] = useState(null);
+  const [academicYears, setAcademicYears] = useState([]);
+  const [currentAcademicYear, setCurrentAcademicYear] = useState(null);
+
+  // Fetch Academic Years
+  const fetchAcademicYears = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('AcademicYear')
+        .select('*')
+        .order('AcademicId', { ascending: true });
+
+      if (error) throw error;
+      setAcademicYears(data || []);
+    } catch (error) {
+      console.error("Error fetching academic years:", error);
+    }
+  };
+
+  // Determine current academic year based on current date and semester intervals
+  const determineCurrentAcademicYear = useCallback(() => {
+    const currentDate = new Date();
+    
+    const currentSemester = semesters.find(semester => {
+      if (!semester.StartDate || !semester.EndDate) return false;
+      
+      const startDate = new Date(semester.StartDate);
+      const endDate = new Date(semester.EndDate);
+      
+      return currentDate >= startDate && currentDate <= endDate;
+    });
+
+    if (currentSemester && currentSemester.AcademicId) {
+      const academicYear = academicYears.find(year => year.AcademicId === currentSemester.AcademicId);
+      setCurrentAcademicYear(academicYear);
+      return academicYear;
+    } else {
+      setCurrentAcademicYear(null);
+      return null;
+    }
+  }, [semesters, academicYears]);
 
   // Organize sessions by school year, semester, and module
   const organizeSessions = (sessions) => {
@@ -80,10 +120,15 @@ const EditSession = () => {
       setLoading(true);
       
       try {
-        // Fetch semesters first
+        // Fetch academic years if not already loaded
+        if (academicYears.length === 0) {
+          await fetchAcademicYears();
+        }
+
+        // Fetch semesters with academic year info
         const { data: semesterData, error: semesterError } = await supabase
           .from('Semestre')
-          .select('SemesterId, label')
+          .select('SemesterId, label, StartDate, EndDate, AcademicId')
           .order('StartDate', { ascending: false });
 
         if (semesterError) throw semesterError;
@@ -100,7 +145,7 @@ const EditSession = () => {
             Module:moduleId (
               moduleId,
               moduleName,
-              Semester:SemesterId (SemesterId, label)
+              Semester:SemesterId (SemesterId, label, AcademicId)
             ),
             Group:groupId (
               groupId,
@@ -137,7 +182,14 @@ const EditSession = () => {
     };
     
     fetchData();
-  }, [user]);
+  }, [user, academicYears]);
+
+  // Determine current academic year when semesters and academic years are loaded
+  useEffect(() => {
+    if (semesters.length > 0 && academicYears.length > 0) {
+      determineCurrentAcademicYear();
+    }
+  }, [semesters, academicYears, determineCurrentAcademicYear]);
 
   useEffect(() => {
     if (sessions.length > 0) {
@@ -228,6 +280,16 @@ const EditSession = () => {
           <Text style={styles.header}>Your Teaching Sessions</Text>
           <Text style={styles.subHeader}>View and manage your past sessions</Text>
         </View>
+
+        {/* Current Academic Year Display */}
+        {currentAcademicYear && (
+          <View style={styles.academicYearContainer}>
+            <Feather name="calendar" size={18} color="#006633" />
+            <Text style={styles.academicYearText}>
+              Current Academic Year: {currentAcademicYear.label}
+            </Text>
+          </View>
+        )}
 
         {/* Semester Filter */}
         <View style={styles.filterRow}>
@@ -439,23 +501,27 @@ const EditSession = () => {
               </Text>
             </TouchableOpacity>
             
-            {semesters.map(semester => (
-              <TouchableOpacity
-                key={semester.SemesterId}
-                style={[
-                  styles.modalOption,
-                  selectedSemester === semester.SemesterId && styles.modalOptionSelected
-                ]}
-                onPress={() => {
-                  setSelectedSemester(semester.SemesterId);
-                  setShowSemesterFilter(false);
-                }}
-              >
-                <Text style={selectedSemester === semester.SemesterId ? styles.modalOptionTextSelected : styles.modalOptionText}>
-                  {semester.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
+            {semesters
+              .filter(semester => 
+                !currentAcademicYear || semester.AcademicId === currentAcademicYear.AcademicId
+              )
+              .map(semester => (
+                <TouchableOpacity
+                  key={semester.SemesterId}
+                  style={[
+                    styles.modalOption,
+                    selectedSemester === semester.SemesterId && styles.modalOptionSelected
+                  ]}
+                  onPress={() => {
+                    setSelectedSemester(semester.SemesterId);
+                    setShowSemesterFilter(false);
+                  }}
+                >
+                  <Text style={selectedSemester === semester.SemesterId ? styles.modalOptionTextSelected : styles.modalOptionText}>
+                    {semester.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
           </ScrollView>
         </View>
       </Modal>
@@ -477,21 +543,36 @@ const styles = StyleSheet.create({
   headerContainer: {
     marginBottom: 20,
     paddingHorizontal: 8,
-    alignItems: 'center',           // Center horizontally
-    justifyContent: 'center',       // Center vertically (for flex)
-    marginTop: 40,                  // Push header a bit down
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 40,
   },
   header: {
     fontSize: 24,
     fontWeight: "bold",
     color: "#006633",
     marginBottom: 4,
-    textAlign: 'center',            // Center text
+    textAlign: 'center',
   },
   subHeader: {
     fontSize: 14,
     color: "#64748b",
-    textAlign: 'center',            // Center text
+    textAlign: 'center',
+  },
+  academicYearContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#e6f2ff',
+    borderColor: '#b3d1ff',
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 12,
+    marginBottom: 16,
+  },
+  academicYearText: {
+    marginLeft: 8,
+    color: '#006633',
+    fontWeight: '500',
   },
   filterRow: {
     flexDirection: 'row',

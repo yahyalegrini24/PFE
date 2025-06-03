@@ -25,8 +25,7 @@ const MarkAttendancePage = ({ route, navigation }) => {
   const [studentsList, setStudentsList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [hasScrolledAll, setHasScrolledAll] = useState(false);
-  const [cancelTimer, setCancelTimer] = useState(5); // Timer for cancel button
-  const cancelTimerRef = useRef(null); // Ref for the timer
+  const [showExitConfirm, setShowExitConfirm] = useState(false);
   const { user } = useContext(UserContext);
 
   // Animation values
@@ -34,16 +33,44 @@ const MarkAttendancePage = ({ route, navigation }) => {
   const slideAnim = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
 
-  const saveAttendance = async (studentMatricule, isPresent) => {
+  // Cleanup function to delete session and attendance
+  const cleanupSession = async () => {
+    try {
+      // Delete attendance records first (foreign key constraint)
+      const { error: attendanceError } = await supabase
+        .from('Attendance')
+        .delete()
+        .eq('sessionId', sessionId);
+
+      if (attendanceError) throw attendanceError;
+
+      // Then delete the session
+      const { error: sessionError } = await supabase
+        .from('Session')
+        .delete()
+        .eq('sessionId', sessionId);
+
+      if (sessionError) throw sessionError;
+
+      console.log('Session and attendance records cleaned up');
+      return true;
+    } catch (error) {
+      console.error('Error during cleanup:', error);
+      Alert.alert('Error', 'Failed to cleanup session');
+      return false;
+    }
+  };
+
+  const saveAttendance = async (matricule, isPresent) => {
     try {
       const { data, error } = await supabase
         .from('Attendance')
         .upsert({
-          studentMatricule: studentMatricule,
+          matricule: matricule,
           sessionId: sessionId,
           presence: isPresent ? 1.0 : 0.0
         }, {
-          onConflict: 'studentMatricule',
+          onConflict: 'matricule,sessionId',
           ignoreDuplicates: false
         });
 
@@ -74,7 +101,7 @@ const MarkAttendancePage = ({ route, navigation }) => {
         if (error) throw error;
 
         const mappedStudents = data.map(item => ({
-          id: item.Student.matricule,
+          id: item.matricule,
           name: `${item.Student.firstName} ${item.Student.lastName || ''}`,
           group: groupId
         }));
@@ -171,15 +198,15 @@ const MarkAttendancePage = ({ route, navigation }) => {
       try {
         const { data, error } = await supabase
           .from('Attendance')
-          .select('studentMatricule, presence')
+          .select('matricule, presence')
           .eq('sessionId', sessionId.toString())
-          .in('studentMatricule', studentsList.map(s => s.id));
+          .in('matricule', studentsList.map(s => s.id));
 
         if (error) throw error;
 
         const existingMarks = {};
         data.forEach(record => {
-          existingMarks[record.studentMatricule] = {
+          existingMarks[record.matricule] = {
             status: record.presence === 1.0 ? 'present' : 'absent'
           };
         });
@@ -233,55 +260,49 @@ const MarkAttendancePage = ({ route, navigation }) => {
     }
   };
 
-  // Handle back button press
+  // Exit session with cleanup
+  const exitSession = async () => {
+    setShowExitConfirm(false);
+    const cleaned = await cleanupSession();
+    if (cleaned) {
+      Alert.alert(
+        "Session Cancelled",
+        "The session has been cancelled and all records have been deleted.",
+        [
+          {
+            text: "OK",
+            onPress: () => navigation.goBack()
+          }
+        ]
+      );
+    }
+  };
+
+  const showExitConfirmation = () => {
+    setShowExitConfirm(true);
+    Alert.alert(
+      "Exit Attendance",
+      "This will cancel the current session and delete all attendance records. Are you sure you want to continue?",
+      [
+        {
+          text: "Continue Session",
+          style: "cancel",
+          onPress: () => setShowExitConfirm(false)
+        },
+        {
+          text: "Cancel Session",
+          style: "destructive",
+          onPress: exitSession
+        }
+      ],
+      { cancelable: false }
+    );
+  };
+
+  // Handle hardware back button
   useEffect(() => {
     const handleBackPress = () => {
-      let timer = 5; // Reset timer to 5 seconds
-      setCancelTimer(timer);
-
-      const alertButtons = [
-        {
-          text: "Cancel",
-          style: "cancel",
-          onPress: () => {
-            clearInterval(cancelTimerRef.current); // Clear timer if cancel is pressed
-          },
-          disabled: true, // Initially disabled
-        },
-        {
-          text: "Continue",
-          style: "default",
-          onPress: () => {
-            clearInterval(cancelTimerRef.current); // Clear timer if continue is pressed
-          },
-        },
-      ];
-
-      const alertOptions = {
-        cancelable: false,
-      };
-
-      // Show the alert
-      Alert.alert(
-        "Exit Attendance",
-        "Are you sure you want to cancel the session?",
-        alertButtons,
-        alertOptions
-      );
-
-      // Start the countdown for the cancel button
-      cancelTimerRef.current = setInterval(() => {
-        timer -= 1;
-        setCancelTimer(timer);
-
-        if (timer <= 0) {
-          clearInterval(cancelTimerRef.current);
-          // Enable the Cancel button
-          alertButtons[0].disabled = false;
-          alertButtons[0].text = "Cancel"; // Update text to remove the timer
-        }
-      }, 1000);
-
+      showExitConfirmation();
       return true; // Prevent default back button behavior
     };
 
@@ -289,29 +310,32 @@ const MarkAttendancePage = ({ route, navigation }) => {
 
     return () => {
       BackHandler.removeEventListener("hardwareBackPress", handleBackPress);
-      clearInterval(cancelTimerRef.current); // Clear timer on component unmount
     };
-  }, [navigation]);
-
-  // Update the cancel button text dynamically
-  useEffect(() => {
-    if (cancelTimer <= 0) {
-      Alert.alert("Session Cancelled", "You have exited the session.");
-      navigation.goBack();
-    }
-  }, [cancelTimer, navigation]);
+  }, []);
 
   const studentStatus = student ? markedStudents[student.id]?.status : null;
   const isPresent = studentStatus === 'present';
   const isAbsent = studentStatus === 'absent';
   
-  if (!student) {
+  if (loading) {
     return (
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="dark-content" backgroundColor="#f5f5f5" />
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#006633" />
           <Text style={styles.loadingText}>Loading students...</Text>
+        </View>
+        <Footer />
+      </SafeAreaView>
+    );
+  }
+
+  if (!student) {
+    return (
+      <SafeAreaView style={styles.container}>
+        <StatusBar barStyle="dark-content" backgroundColor="#f5f5f5" />
+        <View style={styles.loadingContainer}>
+          <Text style={styles.loadingText}>No students available</Text>
         </View>
         <Footer />
       </SafeAreaView>
@@ -457,6 +481,16 @@ const MarkAttendancePage = ({ route, navigation }) => {
             </View>
           </TouchableOpacity>
         )}
+
+        {/* Exit Button */}
+        <View style={styles.exitButtonContainer}>
+          <TouchableOpacity
+            style={styles.exitButton}
+            onPress={showExitConfirmation}
+          >
+            <Text style={styles.exitButtonText}>Exit Attendance</Text>
+          </TouchableOpacity>
+        </View>
       </SafeAreaView>
       <Footer />
     </>
@@ -687,6 +721,20 @@ const styles = StyleSheet.create({
   finishButtonSubtext: {
     color: 'rgba(255, 255, 255, 0.8)',
     fontSize: 14,
+  },
+  exitButtonContainer: {
+    marginTop: 20,
+    marginBottom: 20,
+    alignItems: 'center',
+  },
+  exitButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+  },
+  exitButtonText: {
+    color: '#6c757d',
+    fontSize: 14,
+    textDecorationLine: 'underline',
   },
 });
 

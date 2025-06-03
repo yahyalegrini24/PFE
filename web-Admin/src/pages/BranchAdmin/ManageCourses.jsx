@@ -1,7 +1,7 @@
 /* eslint-disable no-unused-vars */
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../../context/AuthContext";
-import { Book, GraduationCap, Layers, School, ChevronDown, ChevronUp, Trash2 } from "lucide-react";
+import { Book, GraduationCap, Layers, School, ChevronDown, ChevronUp, Trash2, Calendar } from "lucide-react";
 import supabase from "../../utils/Supabase";
 
 const ManageCourses = () => {
@@ -9,15 +9,18 @@ const ManageCourses = () => {
   const [branches, setBranches] = useState([]);
   const [degrees, setDegrees] = useState([]);
   const [semesters, setSemesters] = useState([]);
+  const [academicYears, setAcademicYears] = useState([]);
+  const [currentAcademicYear, setCurrentAcademicYear] = useState(null);
   const [expandedDegree, setExpandedDegree] = useState(null);
   const [expandedSchoolYear, setExpandedSchoolYear] = useState({});
-  const [message, setMessage] = useState({ text: "", visible: false });
+  const [message, setMessage] = useState({ text: "", visible: false, type: "success" });
   const [deleteModal, setDeleteModal] = useState({ show: false, type: '', itemId: null });
   const [selectedSemester, setSelectedSemester] = useState("");
 
   useEffect(() => {
     if (user) {
       fetchUserBranch(user.branchId);
+      fetchAcademicYears();
       fetchSemesters();
       fetchAllDegrees();
     }
@@ -30,12 +33,59 @@ const ManageCourses = () => {
     }
   }, [selectedSemester]);
 
-  const showMessage = (text) => {
-    setMessage({ text, visible: true });
+  const showMessage = (text, type = "success") => {
+    setMessage({ text, visible: true, type });
     setTimeout(() => {
-      setMessage({ text: "", visible: false });
-    }, 3000);
+      setMessage({ text: "", visible: false, type: "success" });
+    }, 5000);
   };
+
+  // Fetch Academic Years
+  const fetchAcademicYears = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('AcademicYear')
+        .select('*')
+        .order('AcademicId', { ascending: true });
+
+      if (error) throw error;
+      setAcademicYears(data || []);
+    } catch (error) {
+      console.error("Error fetching academic years:", error);
+    }
+  };
+
+  // Determine current academic year based on current date and semester intervals
+  const determineCurrentAcademicYear = useCallback(() => {
+    const currentDate = new Date();
+    
+    // Find a semester that includes the current date
+    const currentSemester = semesters.find(semester => {
+      if (!semester.StartDate || !semester.EndDate) return false;
+      
+      const startDate = new Date(semester.StartDate);
+      const endDate = new Date(semester.EndDate);
+      
+      return currentDate >= startDate && currentDate <= endDate;
+    });
+
+    if (currentSemester && currentSemester.AcademicId) {
+      const academicYear = academicYears.find(year => year.AcademicId === currentSemester.AcademicId);
+      setCurrentAcademicYear(academicYear);
+      return academicYear;
+    } else {
+      setCurrentAcademicYear(null);
+      showMessage("Academic year still doesn't start", "warning");
+      return null;
+    }
+  }, [semesters, academicYears]);
+
+  // Call determineCurrentAcademicYear when semesters and academic years are loaded
+  useEffect(() => {
+    if (semesters.length > 0 && academicYears.length > 0) {
+      determineCurrentAcademicYear();
+    }
+  }, [semesters, academicYears, determineCurrentAcademicYear]);
 
   // Fetch User Branch
   const fetchUserBranch = async (branchId) => {
@@ -58,12 +108,18 @@ const ManageCourses = () => {
     }
   };
 
-  // Fetch All Semesters
+  // Fetch All Semesters with Academic Year info
   const fetchSemesters = async () => {
     try {
       const { data, error } = await supabase
         .from('Semestre')
-        .select('*')
+        .select(`
+          *,
+          AcademicYear:AcademicId (
+            AcademicId,
+            label
+          )
+        `)
         .order('StartDate', { ascending: true });
 
       if (error) throw error;
@@ -120,7 +176,17 @@ const ManageCourses = () => {
         schoolYears.map(async (schoolYear) => {
           let query = supabase
             .from('Module')
-            .select('moduleId, moduleName, SemesterId')
+            .select(`
+              moduleId, 
+              moduleName, 
+              SemesterId,
+              Semestre:SemesterId (
+                label,
+                StartDate,
+                EndDate,
+                AcademicId
+              )
+            `)
             .eq('yearId', schoolYear.yearId);
 
           // Only filter by semester if one is selected
@@ -140,7 +206,8 @@ const ManageCourses = () => {
             modules: modules?.map(module => ({
               id: module.moduleId.toString(),
               moduleName: module.moduleName,
-              SemesterId: module.SemesterId
+              SemesterId: module.SemesterId,
+              Semestre: module.Semestre
             })) || []
           };
         })
@@ -173,9 +240,11 @@ const ManageCourses = () => {
       const branchId = user?.branchId;
       if (!branchId) throw new Error("No branch assigned to user");
 
+      // Prompt user for year name
+      const yearName = prompt("Enter the school year name (eg:1LMD):");
+      if (!yearName) return;
+
       const yearId = crypto.randomUUID();
-      const currentYear = new Date().getFullYear();
-      const yearName = `${currentYear}-${currentYear + 1}`;
 
       const { data, error } = await supabase
         .from('SchoolYear')
@@ -212,14 +281,14 @@ const ManageCourses = () => {
       showMessage("School year added successfully!");
     } catch (error) {
       console.error("Error adding school year:", error);
-      showMessage(`Error: ${error.message}`);
+      showMessage(`Error: ${error.message}`, "error");
     }
   };
 
   // Add Module
   const addCourse = async (degreeIndex, schoolYearIndex) => {
     if (!selectedSemester) {
-      showMessage("Please select a semester first");
+      showMessage("Please select a semester first", "warning");
       return;
     }
 
@@ -273,7 +342,7 @@ const ManageCourses = () => {
       showMessage("Module added successfully!");
     } catch (error) {
       console.error("Error adding module:", error);
-      showMessage(`Error: ${error.message}`);
+      showMessage(`Error: ${error.message}`, "error");
     }
   };
 
@@ -321,7 +390,7 @@ const ManageCourses = () => {
       showMessage(`${deleteModal.type === 'year' ? 'School year' : 'Module'} deleted successfully!`);
     } catch (error) {
       console.error(`Error deleting ${deleteModal.type}:`, error);
-      showMessage(`Error deleting ${deleteModal.type}: ${error.message}`);
+      showMessage(`Error deleting ${deleteModal.type}: ${error.message}`, "error");
     } finally {
       setDeleteModal({ show: false, type: '', itemId: null });
     }
@@ -330,13 +399,24 @@ const ManageCourses = () => {
   // Handle semester filter change
   const handleSemesterChange = (e) => {
     setSelectedSemester(e.target.value);
-    // The useEffect hook will handle the refetch automatically
+  };
+
+  // Get message color based on type
+  const getMessageColor = (type) => {
+    switch (type) {
+      case 'error':
+        return 'bg-red-500';
+      case 'warning':
+        return 'bg-yellow-500';
+      default:
+        return 'bg-green-500';
+    }
   };
 
   return (
     <div className="p-6 max-w-4xl mx-auto">
       {message.visible && (
-        <div className="fixed top-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-fade-in">
+        <div className={`fixed top-4 right-4 ${getMessageColor(message.type)} text-white px-6 py-3 rounded-lg shadow-lg flex items-center gap-2 animate-fade-in z-50`}>
           <span>{message.text}</span>
         </div>
       )}
@@ -374,6 +454,18 @@ const ManageCourses = () => {
         <h1 className="text-3xl font-bold text-[#006633]">Manage Department</h1>
       </div>
 
+      {/* Current Academic Year Display */}
+      {currentAcademicYear && (
+        <div className="mb-6 bg-blue-50 border border-blue-200 p-4 rounded-lg">
+          <div className="flex items-center gap-2">
+            <Calendar className="text-blue-600 w-5 h-5" />
+            <h2 className="text-lg font-semibold text-blue-800">
+              Current Academic Year: {currentAcademicYear.label}
+            </h2>
+          </div>
+        </div>
+      )}
+
       {/* Semester Filter Section */}
       <div className="mb-6 bg-white p-4 rounded-lg shadow-sm">
         <div className="flex items-center gap-4">
@@ -388,9 +480,13 @@ const ManageCourses = () => {
               className="w-full p-2 border border-gray-300 rounded-lg focus:ring-[#006633] focus:border-[#006633]"
             >
               <option value="">All Semesters</option>
-              {semesters.map(semester => (
+              {semesters
+                .filter(semester => 
+                  !currentAcademicYear || semester.AcademicId === currentAcademicYear.AcademicId
+                )
+                .map(semester => (
                 <option key={semester.SemesterId} value={semester.SemesterId}>
-                  {semester.label}
+                  {semester.label} 
                 </option>
               ))}
             </select>
@@ -490,10 +586,10 @@ const ManageCourses = () => {
                               >
                                 <div>
                                   <p className="text-gray-700">{module.moduleName}</p>
-                                  {!selectedSemester && module.SemesterId && (
-                                    <p className="text-xs text-gray-500">
-                                      Semester: {semesters.find(s => s.SemesterId === module.SemesterId)?.label || module.SemesterId}
-                                    </p>
+                                  {!selectedSemester && module.Semestre && (
+                                    <div className="text-xs text-gray-500">
+                                      <p>{module.Semestre.label}</p>
+                                    </div>
                                   )}
                                 </div>
                                 <button

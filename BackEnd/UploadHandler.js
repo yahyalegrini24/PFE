@@ -3,21 +3,12 @@ const path = require('path');
 const fs = require('fs');
 const xlsx = require('xlsx');
 
-// Storage Configuration
-const storage = multer.diskStorage({
+// Temp storage configuration
+const tempStorage = multer.diskStorage({
   destination: (req, file, cb) => {
-    const baseFolder = "Cs";
-    const fileNameWithoutExt = path.parse(file.originalname).name;
-    const destinationPath = path.join(process.cwd(), 'uploads', baseFolder, fileNameWithoutExt);
-
-    try {
-      fs.mkdirSync(destinationPath, { recursive: true });
-      console.log(`Directory created: ${destinationPath}`);
-      cb(null, destinationPath);
-    } catch (err) {
-      console.error('Directory creation error:', err);
-      cb(err);
-    }
+    const tempDir = path.join(process.cwd(), 'uploads', 'temp');
+    fs.mkdirSync(tempDir, { recursive: true });
+    cb(null, tempDir);
   },
   filename: (req, file, cb) => {
     cb(null, file.originalname);
@@ -25,13 +16,13 @@ const storage = multer.diskStorage({
 });
 
 const upload = multer({ 
-  storage,
+  storage: tempStorage,
   limits: { fileSize: 10 * 1024 * 1024 }
-});
+}).single('file');
 
-const processGroupFiles = async (filePath, originalFileName) => {
+const processGroupFiles = async (filePath, originalFileName, branchName) => {
   try {
-    console.log(`Processing file: ${filePath}`);
+    console.log(`Processing file for branch: ${branchName}`);
     
     if (!fs.existsSync(filePath)) {
       throw new Error('Uploaded file not found');
@@ -40,9 +31,8 @@ const processGroupFiles = async (filePath, originalFileName) => {
     const workbook = xlsx.readFile(filePath);
     const sheetName = workbook.SheetNames[0];
     const worksheet = workbook.Sheets[sheetName];
-    
     const allData = xlsx.utils.sheet_to_json(worksheet, { header: 1, defval: null });
-    
+
     // Find headers
     let headerRowIndex = 0;
     while (headerRowIndex < allData.length && 
@@ -60,43 +50,49 @@ const processGroupFiles = async (filePath, originalFileName) => {
     const sections = new Set();
     const groups = new Map();
     const students = [];
-    const studentGroups = []; // New array for student-group relationships
+    const studentGroups = [];
     
     studentData.forEach(row => {
       if (row && row.length > 7) {
         const matricule = row[3]?.toString().trim();
         const lastName = row[4]?.toString().trim();
         const firstName = row[5]?.toString().trim();
-        const sectionName = (row[6] || '').toString().trim();
-        const groupName = (row[7] || '').toString().trim();
+        const sectionName = (row[6] || '').toString().trim().toLowerCase();
+        const groupName = (row[7] || '').toString().trim().toLowerCase();
         
         if (!sectionName || !groupName) return;
         
-        sections.add(sectionName);
+        const normalizedSection = sectionName.includes('section') ? 
+          `Section ${sectionName.replace(/section\s*/i, '').toUpperCase()}` : 
+          `Section ${sectionName.toUpperCase()}`;
         
-        if (!groups.has(groupName)) {
-          groups.set(groupName, {
-            section: sectionName,
+        sections.add(normalizedSection);
+        const groupKey = `${normalizedSection}_${groupName}`;
+        
+        if (!groups.has(groupKey)) {
+          groups.set(groupKey, {
+            section: normalizedSection,
+            groupName,
             students: []
           });
         }
         
-        groups.get(groupName).students.push(row);
+        groups.get(groupKey).students.push(row);
         
         if (matricule && lastName && firstName) {
           students.push({ matricule, firstName, lastName });
-          studentGroups.push({ matricule, groupName }); // Add to studentGroups
+          studentGroups.push({ matricule, groupName: groupKey });
         }
       }
     });
 
-    const groupesDir = path.join(path.dirname(filePath), 'Groupes');
-    fs.mkdirSync(groupesDir, { recursive: true });
+    const baseDir = path.join(path.dirname(filePath), 'Groupes');
+    fs.mkdirSync(baseDir, { recursive: true });
 
     const groupFiles = [];
     const baseName = path.parse(originalFileName).name;
 
-    for (const [groupName, groupData] of groups.entries()) {
+    for (const [groupKey, groupData] of groups.entries()) {
       if (groupData.students.length === 0) continue;
 
       const groupStudentData = [headers, ...groupData.students];
@@ -104,19 +100,18 @@ const processGroupFiles = async (filePath, originalFileName) => {
       const newWorksheet = xlsx.utils.aoa_to_sheet(groupStudentData);
       xlsx.utils.book_append_sheet(newWorkbook, newWorksheet, 'Students');
 
-      const safeGroupName = groupName.replace(/\s+/g, '_');
+      const safeGroupName = groupKey.replace(/\s+/g, '_');
       const groupFileName = `${baseName}_${safeGroupName}.xlsx`;
-      const groupFilePath = path.join(groupesDir, groupFileName);
+      const groupFilePath = path.join(baseDir, groupFileName);
 
       xlsx.writeFile(newWorkbook, groupFilePath);
       
       groupFiles.push({
         sectionName: groupData.section,
-        groupName,
+        groupName: groupKey,
         fileName: groupFileName,
         filePath: groupFilePath,
-        studentCount: groupData.students.length,
-        students: groupData.students
+        studentCount: groupData.students.length
       });
     }
 
@@ -124,7 +119,7 @@ const processGroupFiles = async (filePath, originalFileName) => {
       sections: Array.from(sections),
       groupFiles,
       students,
-      studentGroups // Include in response
+      studentGroups
     };
   } catch (error) {
     console.error('File processing error:', error);
@@ -133,35 +128,77 @@ const processGroupFiles = async (filePath, originalFileName) => {
 };
 
 const handleFileUpload = async (req, res) => {
+  if (!req.file) {
+    return res.status(400).json({ error: "No file uploaded" });
+  }
+
+  const tempDir = path.join(process.cwd(), 'uploads', 'temp');
+  const tempFilePath = req.file.path; // Store this before processing
+
   try {
-    if (!req.file) {
-      return res.status(400).json({ error: "No file uploaded" });
+    const branchName = req.body.branchName || 'Default';
+    const academicYearId = req.body.academicYearId; // Get academic year ID from request
+    
+    // Validate that academicYearId is provided
+    if (!academicYearId) {
+      throw new Error('Academic Year ID is required');
     }
     
-    const { sections, groupFiles, students, studentGroups } = await processGroupFiles(req.file.path, req.file.originalname);
+    console.log(`Processing upload for branch: ${branchName}, Academic Year: ${academicYearId}`);
 
-    const response = {
+    // Create final destination path with academic year ID
+    const finalDir = path.join(process.cwd(), 'uploads', branchName, academicYearId, path.parse(req.file.originalname).name);
+    fs.mkdirSync(finalDir, { recursive: true });
+    const finalPath = path.join(finalDir, req.file.originalname);
+
+    // Move file from temp to final location
+    fs.renameSync(tempFilePath, finalPath);
+
+    // Process the file
+    const { sections, groupFiles, students, studentGroups } = await processGroupFiles(
+      finalPath,
+      req.file.originalname,
+      branchName
+    );
+
+    // Clean up temp directory
+    try {
+      // Remove all files in temp directory first
+      const files = fs.readdirSync(tempDir);
+      for (const file of files) {
+        fs.unlinkSync(path.join(tempDir, file));
+      }
+      // Then remove the directory itself
+      fs.rmdirSync(tempDir);
+    } catch (cleanupError) {
+      console.error('Temp directory cleanup error:', cleanupError);
+    }
+
+    res.json({
       originalFile: {
         name: req.file.originalname,
-        path: req.file.path,
+        path: finalPath,
         size: req.file.size,
         type: req.file.mimetype,
       },
       uploadDate: new Date().toISOString(),
       sections,
-      groupFiles: groupFiles.map(gf => ({
-        sectionName: gf.sectionName,
-        groupName: gf.groupName,
-        filePath: gf.filePath,
-        studentCount: gf.studentCount,
-        students: gf.students
-      })),
+      groupFiles,
       students,
-      studentGroups // Include in response
-    };
-    
-    res.json(response);
+      studentGroups,
+      branchName,
+      academicYearId // Include in response for confirmation
+    });
   } catch (error) {
+    // Clean up temp file if error occurred
+    if (tempFilePath && fs.existsSync(tempFilePath)) {
+      try {
+        fs.unlinkSync(tempFilePath);
+      } catch (unlinkError) {
+        console.error('Error cleaning up temp file:', unlinkError);
+      }
+    }
+    
     console.error("Upload failed:", error);
     res.status(500).json({ 
       error: error.message || "File processing error",

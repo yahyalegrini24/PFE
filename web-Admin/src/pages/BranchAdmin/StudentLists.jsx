@@ -1,4 +1,3 @@
-/* eslint-disable no-unused-vars */
 import React, { useState, useEffect } from "react";
 import { Upload, File, XCircle, CheckCircle, ChevronDown, ChevronUp, Trash } from "lucide-react";
 import axios from "axios";
@@ -12,16 +11,36 @@ const UploadLists = () => {
   const [dragging, setDragging] = useState(false);
   const [degrees, setDegrees] = useState([]);
   const [schoolYears, setSchoolYears] = useState([]);
+  const [academicYears, setAcademicYears] = useState([]);
   const [expandedFileId, setExpandedFileId] = useState(null);
   const [fileDetails, setFileDetails] = useState([]);
+  const [branchName, setBranchName] = useState("");
+  const [selectedAcademicYear, setSelectedAcademicYear] = useState("");
 
   useEffect(() => {
     const fetchData = async () => {
+      await fetchBranchName();
       await fetchDegrees();
+      await fetchAcademicYears();
       await fetchSavedFiles();
     };
     fetchData();
   }, []);
+
+  const fetchBranchName = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('Branch')
+        .select('branchName')
+        .eq('branchId', user.branchId)
+        .single();
+        
+      if (error) throw error;
+      setBranchName(data?.branchName || '');
+    } catch (error) {
+      console.error("Error fetching branch name:", error);
+    }
+  };
 
   const fetchDegrees = async () => {
     try {
@@ -33,6 +52,20 @@ const UploadLists = () => {
       setDegrees(data || []);
     } catch (error) {
       console.error("Error fetching degrees:", error);
+    }
+  };
+
+  const fetchAcademicYears = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('AcademicYear')
+        .select('AcademicId, label')
+        .order('label', { ascending: false }); // Most recent first
+
+      if (error) throw error;
+      setAcademicYears(data || []);
+    } catch (error) {
+      console.error("Error fetching academic years:", error);
     }
   };
 
@@ -50,23 +83,32 @@ const UploadLists = () => {
     }
   };
 
-  const fetchSavedFiles = async () => {
+  const fetchSavedFiles = async (academicYearFilter = null) => {
     try {
-      const { data, error } = await supabase
+      let query = supabase
         .from('Student_List')
         .select(`
           *,
-          Degree:degreeId (degreeName),
-          SchoolYear:schoolYearId (yearName)
-        `);
+          Degree!student_list_degreeid_fkey(degreeId, degreeName),
+          SchoolYear!student_list_schoolyearid_fkey(yearId, yearName),
+          AcademicYear!Student_List_AcademicYearId_fkey(AcademicId, label)
+        `)
+        .eq('branchId', user.branchId);
+
+      // Apply academic year filter if selected
+      if (academicYearFilter) {
+        query = query.eq('AcademicYearId', academicYearFilter);
+      }
+
+      const { data, error } = await query.order('uploadDate', { ascending: false });
 
       if (error) throw error;
 
       const formattedData = data.map(file => ({
         ...file,
-        id: file.id || crypto.randomUUID(),
         degreeName: file.Degree?.degreeName || 'Unknown Degree',
-        schoolYear: file.SchoolYear?.yearName || 'Unknown Year'
+        schoolYear: file.SchoolYear?.yearName || 'Unknown Year',
+        academicYear: file.AcademicYear?.label || 'Unknown Academic Year'
       }));
 
       setFileDetails(formattedData || []);
@@ -148,6 +190,11 @@ const UploadLists = () => {
     );
   };
 
+  const handleAcademicYearChange = (academicYearId) => {
+    setSelectedAcademicYear(academicYearId);
+    fetchSavedFiles(academicYearId);
+  };
+
   const toggleFileExpansion = (fileId) => {
     setExpandedFileId((prevId) => (prevId === fileId ? null : fileId));
   };
@@ -158,13 +205,20 @@ const UploadLists = () => {
       setError("❌ Please select a degree and school year before saving.");
       return;
     }
+
+    if (!selectedAcademicYear) {
+      setError("❌ Please select an academic year from the global filter before saving files.");
+      return;
+    }
   
     try {
       const formData = new FormData();
       formData.append("file", file.file);
       formData.append("degreeId", file.degree);
       formData.append("schoolYearId", file.schoolYear);
-  
+      formData.append("academicYearId", selectedAcademicYear);
+      formData.append("branchName", branchName);
+
       const uploadResponse = await axios.post("http://localhost:3000/upload", formData, {
         headers: {
           "Content-Type": "multipart/form-data",
@@ -176,8 +230,7 @@ const UploadLists = () => {
       }
   
       const { originalFile, sections, groupFiles, students, studentGroups } = uploadResponse.data;
-  
-      const dbResults = await storeInSupabase({
+      await storeInSupabase({
         originalFile,
         sections,
         groupFiles,
@@ -185,11 +238,12 @@ const UploadLists = () => {
         studentGroups,
         schoolYearId: file.schoolYear,
         degreeId: file.degree,
+        AcademicYearId: selectedAcademicYear,
         branchId: user.branchId
       });
       
       setUploadedFiles((prevFiles) => prevFiles.filter((f) => f.id !== fileId));
-      fetchSavedFiles();
+      fetchSavedFiles(selectedAcademicYear);
       alert(`File "${file.name}" saved successfully!`);
     } catch (error) {
       console.error("Error saving file:", error);
@@ -197,7 +251,7 @@ const UploadLists = () => {
     }
   };
 
-  async function storeInSupabase({ originalFile, sections, groupFiles, students, studentGroups, schoolYearId, degreeId, branchId }) {
+  async function storeInSupabase({ originalFile, sections, groupFiles, students, studentGroups, schoolYearId, degreeId, AcademicYearId, branchId }) {
     try {
       // 1. Insert sections
       const sectionInserts = [];
@@ -234,7 +288,6 @@ const UploadLists = () => {
         groupInserts.push({
           groupId,
           sectionId,
-          typeId: 1,
           groupName: groupFile.groupName,
           group_path: groupFile.filePath
         });
@@ -271,7 +324,7 @@ const UploadLists = () => {
       if (studentGroupInserts.length > 0) {
         const { error: studentGroupError } = await supabase
           .from('StudentGroup')
-          .upsert(studentGroupInserts, { onConflict: 'matricule' });
+          .insert(studentGroupInserts);
         
         if (studentGroupError) throw studentGroupError;
       }
@@ -288,6 +341,7 @@ const UploadLists = () => {
           uploadDate: new Date().toISOString(),
           degreeId: degreeId,
           schoolYearId: schoolYearId,
+          AcademicYearId: AcademicYearId,
           filePath: originalFile.path,
           branchId: branchId,
         }]);
@@ -316,7 +370,7 @@ const UploadLists = () => {
 
       if (error) throw error;
 
-      fetchSavedFiles();
+      fetchSavedFiles(selectedAcademicYear);
       alert("File deleted successfully!");
     } catch (error) {
       console.error("Error deleting file:", error);
@@ -329,6 +383,32 @@ const UploadLists = () => {
       <h1 className="text-3xl font-bold text-[#006633] mb-6 flex items-center">
         <Upload className="mr-3" size={32} /> Upload Students Lists
       </h1>
+
+      {/* Global Academic Year Filter */}
+      <div className="w-full max-w-lg mb-6">
+        <label className="block text-gray-700 font-semibold mb-2 text-center">
+          Select Academic Year
+        </label>
+        <select
+          value={selectedAcademicYear}
+          onChange={(e) => handleAcademicYearChange(e.target.value)}
+          className="w-full p-3 border-2 border-gray-300 rounded-lg focus:outline-none focus:border-[#006633] text-center font-medium"
+        >
+          <option value="">-- Select Academic Year --</option>
+          {academicYears.map((year) => (
+            <option key={`global-academic-${year.AcademicId}`} value={year.AcademicId}>
+              {year.label}
+            </option>
+          ))}
+        </select>
+        {selectedAcademicYear && (
+          <p className="text-center text-sm text-gray-600 mt-2">
+            Currently viewing: <span className="font-semibold text-[#006633]">
+              {academicYears.find(y => y.AcademicId.toString() === selectedAcademicYear)?.label}
+            </span>
+          </p>
+        )}
+      </div>
 
       <div
         className={`w-full max-w-lg p-6 border-2 border-dashed rounded-lg transition-all duration-300 ${
@@ -473,6 +553,7 @@ const UploadLists = () => {
                   </button>
                 </div>
                 <div className="mt-2 text-sm text-gray-600">
+                  <p>Academic Year: {file.academicYear}</p>
                   <p>File: {file.fileName}</p>
                   <p>Size: {(file.fileSize / 1024).toFixed(2)} KB</p>
                   <p>Uploaded: {new Date(file.uploadDate).toLocaleString()}</p>
